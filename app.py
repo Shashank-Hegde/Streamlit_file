@@ -142,7 +142,3 @@ for idx, f in enumerate(files_page, start=start + 1):
     with st.expander(f"{idx}. 🎧 {f['name']}", expanded=False):
         audio_bytes = download_file_bytes(f["id"])
         audio_player_nodownload(audio_bytes, mime="audio/wav")
-
-        # Option 2: discourage download (not perfect)
-        audio_bytes = download_file_bytes(f["id"])
-        audio_player_nodownload(audio_bytes, mime="audio/wav")
