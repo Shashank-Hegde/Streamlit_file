@@ -13,7 +13,6 @@ st.set_page_config(page_title="GDrive Audio Browser", layout="wide")
 # -----------------------------
 AUDIO_EXT_RE = re.compile(r"\.(wav|wave)$", re.IGNORECASE)
 
-
 def get_drive_service():
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = service_account.Credentials.from_service_account_info(
@@ -21,7 +20,6 @@ def get_drive_service():
         scopes=["https://www.googleapis.com/auth/drive.readonly"],
     )
     return build("drive", "v3", credentials=creds, cache_discovery=False)
-
 
 @st.cache_data(ttl=60)  # re-sync every 60 seconds
 def list_subfolders(root_folder_id: str):
@@ -39,11 +37,11 @@ def list_subfolders(root_folder_id: str):
     ).execute()
     return res.get("files", [])
 
-
 @st.cache_data(ttl=60)
 def list_wav_files(folder_id: str):
     service = get_drive_service()
     q = f"'{folder_id}' in parents and trashed = false"
+
     res = service.files().list(
         q=q,
         fields="files(id,name,mimeType,size)",
@@ -54,7 +52,7 @@ def list_wav_files(folder_id: str):
     files = res.get("files", [])
     wavs = [f for f in files if f.get("name") and AUDIO_EXT_RE.search(f["name"])]
 
-    # Dedup by file id (safety)
+    # Dedup by ID (safety)
     seen = set()
     out = []
     for f in wavs:
@@ -64,8 +62,7 @@ def list_wav_files(folder_id: str):
         out.append(f)
     return out
 
-
-@st.cache_data(ttl=3600)  # cache audio bytes longer; Drive file ids are stable
+@st.cache_data(ttl=3600)
 def download_file_bytes(file_id: str) -> bytes:
     service = get_drive_service()
     req = service.files().get_media(fileId=file_id)
@@ -77,7 +74,6 @@ def download_file_bytes(file_id: str) -> bytes:
         _, done = downloader.next_chunk()
 
     return fh.getvalue()
-
 
 def audio_player_nodownload(audio_bytes: bytes, mime: str = "audio/wav"):
     """
@@ -92,7 +88,6 @@ def audio_player_nodownload(audio_bytes: bytes, mime: str = "audio/wav"):
     </audio>
     """
     st.components.v1.html(html, height=60)
-
 
 # -----------------------------
 # UI
@@ -149,15 +144,19 @@ files_page = files[start:end]
 
 st.divider()
 
-# Number is shown both in expander title AND inside (most reliable)
+# Render list with stable numbering
 for idx, f in enumerate(files_page, start=start + 1):
     file_id = f["id"]
     file_name = f["name"]
 
-    # unique key prevents Streamlit from mixing expanders between reruns/pages
-    exp_key = f"exp_{selected_folder['id']}_{file_id}"
+    # Optional: stable toggle widget (has key), expander itself has no key.
+    open_it = st.checkbox(
+        f"Open #{idx}: {file_name}",
+        value=False,
+        key=f"open_{selected_folder['id']}_{file_id}",
+    )
 
-    with st.expander(f"#{idx}. 🎧 {file_name}", expanded=False, key=exp_key):
+    with st.expander(f"#{idx}. 🎧 {file_name}", expanded=open_it):
         st.markdown(f"**Audio #{idx}** — `{file_name}`")
         audio_bytes = download_file_bytes(file_id)
         audio_player_nodownload(audio_bytes, mime="audio/wav")
