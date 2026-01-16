@@ -144,19 +144,12 @@ files_page = files[start:end]
 
 st.divider()
 
-# Render list with stable numbering
+# Single UI row per file (no checkbox)
 for idx, f in enumerate(files_page, start=start + 1):
     file_id = f["id"]
     file_name = f["name"]
 
-    # Optional: stable toggle widget (has key), expander itself has no key.
-    open_it = st.checkbox(
-        f"Open #{idx}: {file_name}",
-        value=False,
-        key=f"open_{selected_folder['id']}_{file_id}",
-    )
-
-    with st.expander(f"#{idx}. 🎧 {file_name}", expanded=open_it):
+    with st.expander(f"#{idx}. 🎧 {file_name}", expanded=False):
         st.markdown(f"**Audio #{idx}** — `{file_name}`")
         audio_bytes = download_file_bytes(file_id)
         audio_player_nodownload(audio_bytes, mime="audio/wav")
