@@ -150,6 +150,5 @@ for idx, f in enumerate(files_page, start=start + 1):
     file_name = f["name"]
 
     with st.expander(f"#{idx}. 🎧 {file_name}", expanded=False):
-        st.markdown(f"**Audio #{idx}** — `{file_name}`")
         audio_bytes = download_file_bytes(file_id)
         audio_player_nodownload(audio_bytes, mime="audio/wav")
