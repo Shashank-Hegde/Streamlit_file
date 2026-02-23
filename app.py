@@ -32,7 +32,7 @@ def list_subfolders(root_folder_id: str):
     res = service.files().list(
         q=q,
         fields="files(id,name)",
-        pageSize=1000,
+        pageSize=1800,
         orderBy="name",
     ).execute()
     return res.get("files", [])
@@ -45,7 +45,7 @@ def list_wav_files(folder_id: str):
     res = service.files().list(
         q=q,
         fields="files(id,name,mimeType,size)",
-        pageSize=1000,
+        pageSize=1800,
         orderBy="name",
     ).execute()
 
