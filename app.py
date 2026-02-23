@@ -38,28 +38,52 @@ def list_subfolders(root_folder_id: str):
     return res.get("files", [])
 
 @st.cache_data(ttl=60)
-def list_wav_files(folder_id: str):
+def list_wav_files(folder_id: str, max_files: int | None = None):
+    """
+    Lists WAV files in a folder, paginating Drive API results.
+    - max_files=None -> fetch ALL files
+    - max_files=1800 -> fetch up to 1800 files
+    """
     service = get_drive_service()
     q = f"'{folder_id}' in parents and trashed = false"
 
-    res = service.files().list(
-        q=q,
-        fields="files(id,name,mimeType,size)",
-        pageSize=1000,
-        orderBy="name",
-    ).execute()
+    all_files = []
+    page_token = None
 
-    files = res.get("files", [])
-    wavs = [f for f in files if f.get("name") and AUDIO_EXT_RE.search(f["name"])]
+    while True:
+        res = service.files().list(
+            q=q,
+            fields="nextPageToken, files(id,name,mimeType,size)",
+            pageSize=1000,          # Drive API max
+            orderBy="name",
+            pageToken=page_token,
+        ).execute()
+
+        batch = res.get("files", [])
+        all_files.extend(batch)
+
+        # Stop if we reached the target
+        if max_files is not None and len(all_files) >= max_files:
+            all_files = all_files[:max_files]
+            break
+
+        page_token = res.get("nextPageToken")
+        if not page_token:
+            break
+
+    # Filter wav/wave by filename
+    wavs = [f for f in all_files if f.get("name") and AUDIO_EXT_RE.search(f["name"])]
 
     # Dedup by ID (safety)
     seen = set()
     out = []
     for f in wavs:
-        if f["id"] in seen:
+        fid = f.get("id")
+        if not fid or fid in seen:
             continue
-        seen.add(f["id"])
+        seen.add(fid)
         out.append(f)
+
     return out
 
 @st.cache_data(ttl=3600)
@@ -127,7 +151,7 @@ with colA:
 with colB:
     page_size = st.number_input("Files per page", min_value=10, max_value=200, value=50, step=10)
 
-files = list_wav_files(selected_folder["id"])
+files = list_wav_files(selected_folder["id"], max_files=1800)
 if query.strip():
     q = query.strip().lower()
     files = [f for f in files if q in f["name"].lower()]
