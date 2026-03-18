@@ -151,7 +151,7 @@ with colA:
 with colB:
     page_size = st.number_input("Files per page", min_value=10, max_value=200, value=50, step=10)
 
-files = list_wav_files(selected_folder["id"], max_files=1800)
+files = list_wav_files(selected_folder["id"], max_files=2600)
 if query.strip():
     q = query.strip().lower()
     files = [f for f in files if q in f["name"].lower()]
