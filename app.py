@@ -180,7 +180,7 @@ colA, colB = st.columns([2, 1])
 with colA:
     query = st.text_input("🔍 Search file name", "")
 with colB:
-    page_size = st.number_input("Files per page", min_value=10, max_value=200, value=50, step=10)
+    page_size = st.number_input("Files per page", min_value=10, max_value=1500, value=50, step=10)
 
 if query.strip():
     files = [f for f in files if query.strip().lower() in f["name"].lower()]
