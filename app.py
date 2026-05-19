@@ -1,7 +1,7 @@
 import io
 import re
 import base64
-import streamlit as st
+import streamlit as s
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
