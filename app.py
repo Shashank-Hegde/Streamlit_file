@@ -1,7 +1,7 @@
 import io
 import re
 import base64
-import streamlit as s
+import streamlit as st
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -13,6 +13,7 @@ st.set_page_config(page_title="GDrive Audio Browser", layout="wide")
 # -----------------------------
 AUDIO_EXT_RE = re.compile(r"\.(wav|wave)$", re.IGNORECASE)
 
+
 def get_drive_service():
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = service_account.Credentials.from_service_account_info(
@@ -21,70 +22,42 @@ def get_drive_service():
     )
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
-@st.cache_data(ttl=60)  # re-sync every 60 seconds
-def list_subfolders(root_folder_id: str):
-    service = get_drive_service()
-    q = (
-        f"'{root_folder_id}' in parents "
-        "and mimeType = 'application/vnd.google-apps.folder' "
-        "and trashed = false"
-    )
-    res = service.files().list(
-        q=q,
-        fields="files(id,name)",
-        pageSize=1000,
-        orderBy="name",
-    ).execute()
-    return res.get("files", [])
 
 @st.cache_data(ttl=60)
-def list_wav_files(folder_id: str, max_files: int | None = None):
+def list_children(folder_id: str):
     """
-    Lists WAV files in a folder, paginating Drive API results.
-    - max_files=None -> fetch ALL files
-    - max_files=1800 -> fetch up to 1800 files
+    Returns (subfolders, wav_files) for the given folder_id.
+    subfolders: list of {id, name}
+    wav_files:  list of {id, name, mimeType, size}
     """
     service = get_drive_service()
     q = f"'{folder_id}' in parents and trashed = false"
 
-    all_files = []
+    all_items = []
     page_token = None
-
     while True:
         res = service.files().list(
             q=q,
             fields="nextPageToken, files(id,name,mimeType,size)",
-            pageSize=1000,          # Drive API max
+            pageSize=1000,
             orderBy="name",
             pageToken=page_token,
         ).execute()
-
-        batch = res.get("files", [])
-        all_files.extend(batch)
-
-        # Stop if we reached the target
-        if max_files is not None and len(all_files) >= max_files:
-            all_files = all_files[:max_files]
-            break
-
+        all_items.extend(res.get("files", []))
         page_token = res.get("nextPageToken")
         if not page_token:
             break
 
-    # Filter wav/wave by filename
-    wavs = [f for f in all_files if f.get("name") and AUDIO_EXT_RE.search(f["name"])]
+    subfolders = [
+        f for f in all_items
+        if f.get("mimeType") == "application/vnd.google-apps.folder"
+    ]
+    wav_files = [
+        f for f in all_items
+        if f.get("name") and AUDIO_EXT_RE.search(f["name"])
+    ]
+    return subfolders, wav_files
 
-    # Dedup by ID (safety)
-    seen = set()
-    out = []
-    for f in wavs:
-        fid = f.get("id")
-        if not fid or fid in seen:
-            continue
-        seen.add(fid)
-        out.append(f)
-
-    return out
 
 @st.cache_data(ttl=3600)
 def download_file_bytes(file_id: str) -> bytes:
@@ -92,72 +65,137 @@ def download_file_bytes(file_id: str) -> bytes:
     req = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, req)
-
     done = False
     while not done:
         _, done = downloader.next_chunk()
-
     return fh.getvalue()
 
+
 def audio_player_nodownload(audio_bytes: bytes, mime: str = "audio/wav"):
-    """
-    Tries to discourage download.
-    NOTE: On the web you cannot fully prevent users from saving audio.
-    """
     b64 = base64.b64encode(audio_bytes).decode("utf-8")
     html = f"""
-    <audio controls controlsList="nodownload noplaybackrate" oncontextmenu="return false" style="width: 100%;">
+    <audio controls controlsList="nodownload noplaybackrate"
+           oncontextmenu="return false" style="width:100%;">
       <source src="data:{mime};base64,{b64}" type="{mime}">
       Your browser does not support the audio element.
     </audio>
     """
     st.components.v1.html(html, height=60)
 
+
+# -----------------------------
+# Recursive sidebar tree
+# -----------------------------
+
+def render_folder_tree(folder_id: str, folder_name: str, depth: int = 0):
+    """
+    Renders the folder tree in the sidebar using st.expander for nesting.
+    Returns the (folder_id, folder_name) of the folder the user clicked,
+    stored in st.session_state["selected_folder"].
+    """
+    subfolders, wav_files = list_children(folder_id)
+    has_children = bool(subfolders) or bool(wav_files)
+
+    indent = "&nbsp;" * (depth * 4)
+
+    if has_children:
+        # Use an expander for folders that have children
+        label = f"{'📂' if depth > 0 else '🗂️'} {folder_name}"
+        with st.sidebar.expander(label, expanded=(depth == 0)):
+            # Clickable button to select this folder's audio
+            if wav_files:
+                btn_label = f"📋 Show {len(wav_files)} WAV file(s) here"
+                if st.button(btn_label, key=f"btn_{folder_id}"):
+                    st.session_state["selected_folder_id"] = folder_id
+                    st.session_state["selected_folder_name"] = folder_name
+
+            for subfolder in subfolders:
+                render_folder_tree(subfolder["id"], subfolder["name"], depth + 1)
+    else:
+        # Leaf folder — just a button
+        btn_label = f"📁 {folder_name}"
+        if st.sidebar.button(btn_label, key=f"btn_{folder_id}"):
+            st.session_state["selected_folder_id"] = folder_id
+            st.session_state["selected_folder_name"] = folder_name
+
+
+def collect_all_wavs(folder_id: str) -> list:
+    """Recursively collect all WAV files under folder_id."""
+    subfolders, wav_files = list_children(folder_id)
+    result = list(wav_files)
+    for sf in subfolders:
+        result.extend(collect_all_wavs(sf["id"]))
+    return result
+
+
 # -----------------------------
 # UI
 # -----------------------------
-st.title("📁 Google Drive Audio Browser (WAV)")
+st.title("📁 Google Drive Audio Browser")
 
 root_id = st.secrets.get("GDRIVE_ROOT_FOLDER_ID", None)
 if not root_id:
     st.error("Missing GDRIVE_ROOT_FOLDER_ID in Streamlit secrets.")
     st.stop()
 
+# Session state defaults
+if "selected_folder_id" not in st.session_state:
+    st.session_state["selected_folder_id"] = root_id
+    st.session_state["selected_folder_name"] = "Root"
+
+# --- Sidebar ---
 with st.sidebar:
-    st.header("Browse")
-    refresh = st.button("🔄 Refresh now")
+    st.header("📂 Folder Tree")
+    if st.button("🔄 Refresh"):
+        st.cache_data.clear()
+        st.rerun()
 
-if refresh:
-    list_subfolders.clear()
-    list_wav_files.clear()
-    download_file_bytes.clear()
-    st.cache_data.clear()
-    st.rerun()
+    st.divider()
 
-folders = list_subfolders(root_id)
-if not folders:
-    st.warning("No subfolders found under the root folder (or not shared with the service account).")
-    st.stop()
+    # Render root-level subfolders as the tree
+    root_subfolders, root_wavs = list_children(root_id)
 
-folder_names = [f["name"] for f in folders]
-selected_name = st.sidebar.selectbox("Select audio folder", folder_names)
-selected_folder = next(f for f in folders if f["name"] == selected_name)
+    # Option to view root-level WAVs directly
+    if root_wavs:
+        if st.button(f"🗂️ Root ({len(root_wavs)} WAV files)"):
+            st.session_state["selected_folder_id"] = root_id
+            st.session_state["selected_folder_name"] = "Root"
 
-st.subheader(f"Folder: {selected_folder['name']}")
+    for folder in root_subfolders:
+        render_folder_tree(folder["id"], folder["name"], depth=1)
 
+# --- Main panel ---
+selected_folder_id = st.session_state["selected_folder_id"]
+selected_folder_name = st.session_state["selected_folder_name"]
+
+st.subheader(f"📂 {selected_folder_name}")
+
+# Toggle: show only direct files or recurse into subfolders
+include_subfolders = st.checkbox("Include files from sub-folders", value=False)
+
+if include_subfolders:
+    _, direct_wavs = list_children(selected_folder_id)
+    files = collect_all_wavs(selected_folder_id)
+else:
+    _, files = list_children(selected_folder_id)
+
+# Search
 colA, colB = st.columns([2, 1])
 with colA:
-    query = st.text_input("Search file name", "")
+    query = st.text_input("🔍 Search file name", "")
 with colB:
     page_size = st.number_input("Files per page", min_value=10, max_value=200, value=50, step=10)
 
-files = list_wav_files(selected_folder["id"], max_files=2600)
 if query.strip():
     q = query.strip().lower()
     files = [f for f in files if q in f["name"].lower()]
 
 total = len(files)
-st.caption(f"{total} WAV file(s)")
+st.caption(f"{total} WAV file(s) found")
+
+if not files:
+    st.info("No WAV files in this folder. Select a folder from the sidebar or enable 'Include files from sub-folders'.")
+    st.stop()
 
 # Pagination
 page_count = max(1, (total + page_size - 1) // page_size)
@@ -168,11 +206,9 @@ files_page = files[start:end]
 
 st.divider()
 
-# Single UI row per file (no checkbox)
 for idx, f in enumerate(files_page, start=start + 1):
     file_id = f["id"]
     file_name = f["name"]
-
     with st.expander(f"#{idx}. 🎧 {file_name}", expanded=False):
         audio_bytes = download_file_bytes(file_id)
         audio_player_nodownload(audio_bytes, mime="audio/wav")
