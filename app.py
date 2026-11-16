@@ -88,7 +88,7 @@ def render_tree(folder_id: str, folder_name: str, depth: int = 0):
     is_selected = st.session_state.get("sel_id") == folder_id
 
     # Build the label with indentation via spaces (sidebar is single-column)
-    indent = "\u00a0" * (depth * 4)   # non-breaking spaces for visual indent
+    indent = " " * (depth * 4)   # non-breaking spaces for visual indent
     arrow  = "▾" if is_expanded else "▸"
     icon   = "📂" if is_expanded else "📁"
 
@@ -140,6 +140,9 @@ with st.sidebar:
     if st.button("🔄 Refresh"):
         st.cache_data.clear()
         st.session_state["expanded"] = set()
+        # Drop any cached audio so stale bytes aren't replayed
+        for k in [k for k in st.session_state if k.startswith("audio_")]:
+            del st.session_state[k]
         st.rerun()
     st.divider()
 
@@ -200,6 +203,21 @@ end   = min(start + page_size, total)
 st.divider()
 
 for idx, f in enumerate(files[start:end], start=start + 1):
-    with st.expander(f"#{idx}. 🎧 {f['name']}", expanded=False):
-        audio_bytes = download_file_bytes(f["id"])
-        audio_player_nodownload(audio_bytes, mime="audio/wav")
+    # Size hint shown in the expander header (no download needed)
+    size_str = ""
+    if f.get("size"):
+        size_mb = int(f["size"]) / 1_048_576
+        size_str = f"  —  {size_mb:.2f} MB"
+
+    with st.expander(f"#{idx}. 🎧 {f['name']}{size_str}", expanded=False):
+        load_key = f"audio_{f['id']}"
+
+        if load_key in st.session_state:
+            # Already downloaded in this session — play immediately
+            audio_player_nodownload(st.session_state[load_key], mime="audio/wav")
+        else:
+            # Defer download until the user explicitly asks
+            if st.button("▶ Load & Play", key=f"btn_{f['id']}"):
+                with st.spinner(f"Downloading {f['name']}…"):
+                    st.session_state[load_key] = download_file_bytes(f["id"])
+                st.rerun()
