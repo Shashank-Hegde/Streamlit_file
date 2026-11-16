@@ -1,4 +1,5 @@
 import re
+import requests as _req
 import streamlit as st
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -13,6 +14,7 @@ AUDIO_EXT_RE = re.compile(r"\.(wav|wave)$", re.IGNORECASE)
 # Drive helpers
 # -----------------------------
 
+@st.cache_resource          # one service object + HTTP connection pool for the app lifetime
 def get_drive_service():
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = service_account.Credentials.from_service_account_info(
@@ -22,9 +24,8 @@ def get_drive_service():
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
-@st.cache_data(ttl=3000)   # OAuth tokens live ~60 min; refresh at 50 min
+@st.cache_data(ttl=3000)    # OAuth tokens last ~60 min; refresh at 50 min
 def _get_access_token() -> str:
-    """Return a short-lived OAuth access token for Drive streaming URLs."""
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = service_account.Credentials.from_service_account_info(
         creds_dict,
@@ -34,13 +35,19 @@ def _get_access_token() -> str:
     return creds.token
 
 
-def stream_url(file_id: str) -> str:
-    """Direct Drive streaming URL — browser fetches only while playing."""
+def download_bytes(file_id: str) -> bytes:
+    """
+    Plain requests.get — much faster than MediaIoBaseDownload for small files.
+    Result is cached in st.session_state so a second open is instant.
+    """
     token = _get_access_token()
-    return (
-        f"https://www.googleapis.com/drive/v3/files/{file_id}"
-        f"?alt=media&access_token={token}"
+    r = _req.get(
+        f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=20,
     )
+    r.raise_for_status()
+    return r.content
 
 
 @st.cache_data(ttl=60)
@@ -62,31 +69,11 @@ def list_children(folder_id: str):
         if not page_token:
             break
 
-    subfolders = [
-        f for f in all_items
-        if f.get("mimeType") == "application/vnd.google-apps.folder"
-    ]
-    wavs = [
-        f for f in all_items
-        if f.get("name") and AUDIO_EXT_RE.search(f["name"])
-    ]
+    subfolders = [f for f in all_items
+                  if f.get("mimeType") == "application/vnd.google-apps.folder"]
+    wavs       = [f for f in all_items
+                  if f.get("name") and AUDIO_EXT_RE.search(f["name"])]
     return subfolders, wavs
-
-
-def audio_player(file_id: str, mime: str = "audio/wav"):
-    """
-    Render an audio player that streams from Drive.
-    preload='none' means zero bytes are fetched until the user hits play.
-    No Python-side download at all.
-    """
-    url = stream_url(file_id)
-    html = f"""
-    <audio controls controlsList="nodownload noplaybackrate"
-           oncontextmenu="return false" style="width:100%;" preload="none">
-      <source src="{url}" type="{mime}">
-    </audio>
-    """
-    st.components.v1.html(html, height=60)
 
 
 # -----------------------------
@@ -95,8 +82,8 @@ def audio_player(file_id: str, mime: str = "audio/wav"):
 
 def render_tree(folder_id: str, folder_name: str, depth: int = 0):
     expanded_set = st.session_state.setdefault("expanded", set())
-    is_expanded = folder_id in expanded_set
-    is_selected = st.session_state.get("sel_id") == folder_id
+    is_expanded  = folder_id in expanded_set
+    is_selected  = st.session_state.get("sel_id") == folder_id
 
     indent = " " * (depth * 4)
     arrow  = "▾" if is_expanded else "▸"
@@ -112,7 +99,7 @@ def render_tree(folder_id: str, folder_name: str, depth: int = 0):
                 list_children(folder_id)
             st.rerun()
     with c2:
-        label = f"{indent}{icon} {folder_name}"
+        label    = f"{indent}{icon} {folder_name}"
         btn_type = "primary" if is_selected else "secondary"
         if st.button(label, key=f"sel_{folder_id}", type=btn_type):
             st.session_state["sel_id"]   = folder_id
@@ -147,6 +134,8 @@ with st.sidebar:
     if st.button("🔄 Refresh"):
         st.cache_data.clear()
         st.session_state["expanded"] = set()
+        for k in [k for k in st.session_state if k.startswith("audio_")]:
+            del st.session_state[k]
         st.rerun()
     st.divider()
 
@@ -211,6 +200,13 @@ for idx, f in enumerate(files[start:end], start=start + 1):
         size_str = f"  —  {size_mb:.2f} MB"
 
     with st.expander(f"#{idx}. 🎧 {f['name']}{size_str}", expanded=False):
-        # Just renders an <audio> tag pointing at a Drive URL.
-        # Zero bytes transferred until the user presses play.
-        audio_player(f["id"], mime="audio/wav")
+        load_key = f"audio_{f['id']}"
+
+        if load_key in st.session_state:
+            # Already downloaded — plays from memory, instant
+            st.audio(st.session_state[load_key], format="audio/wav")
+        else:
+            if st.button("▶ Load & Play", key=f"btn_{f['id']}"):
+                with st.spinner(f"Downloading {f['name']}…"):
+                    st.session_state[load_key] = download_bytes(f["id"])
+                st.rerun()
